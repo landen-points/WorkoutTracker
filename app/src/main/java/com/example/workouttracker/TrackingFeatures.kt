@@ -79,38 +79,67 @@ fun DailyWeightPanel(date: LocalDate) {
 @Composable
 fun GraphingScreen(repo: WorkoutRepository, modifier: Modifier = Modifier) {
     val preferences = LocalUserPreferences.current
-    val context = LocalContext.current
-    var selected by rememberSaveable { mutableStateOf("Body weight") }
-    var scale by rememberSaveable { mutableStateOf("1 month") }
+    var selectedName by rememberSaveable { mutableStateOf<String?>(null) }
+    var period by rememberSaveable { mutableStateOf(GraphPeriod.MONTH) }
     val today = LocalDate.now()
-    val start = when (scale) { "1 week" -> today.minusDays(6); "6 months" -> today.minusMonths(6); else -> today.minusMonths(1) }
-    val result = runCatching {
-        val values = if (selected == "Body weight") repo.allWeights() else
-            repo.history(selected).filter { it.exercise.cardio == null }.groupBy { it.date }
-                .mapValues { (_, entries) -> entries.flatMap { it.exercise.sets }.maxOfOrNull { it.weight } ?: 0.0 }
-        values.filterKeys { !it.isBefore(start) && !it.isAfter(today) }.toSortedMap()
-    }
-    Column(modifier.fillMaxSize().padding(16.dp).verticalScroll(rememberScrollState())) {
-        ChoiceMenu(selected, listOf("Body weight") + repo.allExerciseNames().filter { name -> repo.history(name).any { it.exercise.cardio == null } }) { selected = it }
-        ChoiceMenu(scale, listOf("1 week", "1 month", "6 months")) { scale = it }
-        Text(if (selected == "Body weight") "Body weight (${preferences.units.symbol})" else "Heaviest set per day (${preferences.units.symbol})")
-        if (result.isFailure) Text("Unable to read graph data.") else {
-            val points = result.getOrThrow().entries.toList()
-            if (points.isEmpty()) Text("No entries in this time range.") else {
-                val color = MaterialTheme.colorScheme.primary
-                val low = points.minOf { it.value }; val high = points.maxOf { it.value }
-                Text("${preferences.weightText(low)} - ${preferences.weightText(high)} ${preferences.units.symbol}")
-                Canvas(Modifier.fillMaxWidth().height(220.dp).padding(12.dp)) {
-                    val coordinates = points.map { point ->
-                        Offset(((point.key.toEpochDay() - start.toEpochDay()).toFloat() / (today.toEpochDay() - start.toEpochDay()).coerceAtLeast(1)) * size.width,
-                            if (high == low) size.height / 2 else size.height * (1 - ((point.value - low) / (high - low)).toFloat()) )
-                    }
-                    coordinates.zipWithNext().forEach { (a, b) -> drawLine(color, a, b, 4f) }
-                    coordinates.forEach { drawCircle(color, 6f, it) }
-                }
-                Text("${preferences.dateText(start)} to ${preferences.dateText(today)}")
-                points.forEach { Text("${preferences.dateText(it.key)}: ${preferences.weightText(it.value)} ${preferences.units.symbol}") }
+    val names = repo.allExerciseNames().filter { name -> repo.history(name).any { it.exercise.cardio == null } }
+    fun exerciseLabel(name: String) = if (name == "Body weight") "Body weight (exercise)" else name
+    val choices = listOf("Body weight") + names.map(::exerciseLabel)
+    val allValues = if (selectedName == null) repo.allWeights() else
+        repo.history(selectedName!!).filter { it.exercise.cardio == null }.groupBy { it.date }
+            .mapValues { (_, entries) -> entries.flatMap { it.exercise.sets }.maxOfOrNull { it.weight } ?: 0.0 }
+    val start = period.start(today, allValues.keys.filter { !it.isAfter(today) }.minOrNull())
+    val values = allValues.filterKeys { !it.isBefore(start) && !it.isAfter(today) }.toSortedMap()
+    val summary = summarizeGraph(values)
+    Column(modifier.fillMaxSize().padding(16.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            BoxDropdown(selectedName?.let(::exerciseLabel) ?: "Body weight", choices, Modifier.weight(0.58f)) { label ->
+                selectedName = names.firstOrNull { exerciseLabel(it) == label }
             }
+            BoxDropdown(period.label, GraphPeriod.entries.map { it.label }, Modifier.weight(0.42f)) { label ->
+                period = GraphPeriod.entries.first { it.label == label }
+            }
+        }
+        Text(if (selectedName == null) "Body weight (${preferences.units.symbol})" else "Heaviest set per day (${preferences.units.symbol})")
+        if (summary == null) {
+            Text("No entries in this time range.")
+        } else {
+            val unit = preferences.units.symbol
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("Range", style = MaterialTheme.typography.labelMedium)
+                    Text("${preferences.weightText(summary.minimum)} - ${preferences.weightText(summary.maximum)} $unit")
+                    Text("Average: ${preferences.weightText(summary.average)} $unit")
+                    Text("Logged days: ${summary.loggedDays}")
+                }
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("Total change", style = MaterialTheme.typography.labelMedium)
+                    if (summary.change == null) Text("Need 2 logged days") else {
+                        val prefix = if (summary.change > 0) "+" else ""
+                        Text("$prefix${preferences.weightText(summary.change)} $unit")
+                        summary.percentChange?.let { Text(String.format(java.util.Locale.US, "%+.1f%%", it)) }
+                            ?: Text("Percentage unavailable from zero")
+                    }
+                    Text("First: ${preferences.weightText(summary.first)} $unit")
+                    Text("Last: ${preferences.weightText(summary.last)} $unit")
+                }
+            }
+            val color = MaterialTheme.colorScheme.primary
+            val points = values.entries.toList()
+            Canvas(Modifier.fillMaxWidth().height(220.dp).padding(12.dp)) {
+                val coordinates = points.map { point ->
+                    Offset(((point.key.toEpochDay() - start.toEpochDay()).toFloat() / (today.toEpochDay() - start.toEpochDay()).coerceAtLeast(1)) * size.width,
+                        if (summary.maximum == summary.minimum) size.height / 2 else
+                            size.height * (1 - ((point.value - summary.minimum) / (summary.maximum - summary.minimum)).toFloat()))
+                }
+                coordinates.zipWithNext().forEach { (a, b) -> drawLine(color, a, b, 4f) }
+                coordinates.forEach { drawCircle(color, 6f, it) }
+            }
+            Text("${preferences.dateText(start)} to ${preferences.dateText(today)}")
+            if (summary.change != null) Text(
+                "Change compares logged values on ${preferences.dateText(summary.firstDate)} and ${preferences.dateText(summary.lastDate)}.",
+                style = MaterialTheme.typography.bodySmall)
+            points.forEach { Text("${preferences.dateText(it.key)}: ${preferences.weightText(it.value)} $unit") }
         }
     }
 }
@@ -121,7 +150,8 @@ object RestTimer {
     suspend fun deadline(context: Context) = AppSettings.deadline(context)
     private fun alarm(context: Context) = PendingIntent.getBroadcast(context, ID, Intent(context, RestTimerReceiver::class.java), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
     suspend fun start(context: Context) {
-        val end = System.currentTimeMillis() + AppSettings.restSeconds(context) * 1000L
+        val durationSeconds = AppSettings.restSeconds(context)
+        val end = System.currentTimeMillis() + durationSeconds * 1000L
         AppSettings.setDeadline(context, end)
         show(context, end, false)
         context.getSystemService(AlarmManager::class.java).setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, end, alarm(context))
@@ -184,7 +214,12 @@ fun RestTimerPanel(date: LocalDate) {
     LaunchedEffect(Unit) {
         try {
             while (true) {
-                now = System.currentTimeMillis(); end = RestTimer.deadline(context); ready = true; delay(250)
+                val deadline = RestTimer.deadline(context)
+                // Read the clock after the suspending settings read, alongside this deadline.
+                now = System.currentTimeMillis()
+                end = deadline
+                ready = true
+                delay(250)
             }
         } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
         catch (failure: Exception) { ready = false; error = "Could not read timer settings." }
@@ -196,7 +231,14 @@ fun RestTimerPanel(date: LocalDate) {
             TextButton(onClick = {
                 if (Build.VERSION.SDK_INT >= 33 && context.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED)
                     permission.launch(android.Manifest.permission.POST_NOTIFICATIONS)
-                scope.launch { runCatching { RestTimer.start(context); end = RestTimer.deadline(context) }.onFailure { error = "Could not start the timer." } }
+                scope.launch {
+                    runCatching {
+                        RestTimer.start(context)
+                        val deadline = RestTimer.deadline(context)
+                        now = System.currentTimeMillis()
+                        end = deadline
+                    }.onFailure { error = "Could not start the timer." }
+                }
             }, enabled = ready && (end == 0L || seconds == 0)) { Text("Start") }
             TextButton(enabled = ready, onClick = { scope.launch { runCatching { RestTimer.reset(context); end = 0 }.onFailure { error = "Could not reset timer." } } }) { Text("Reset") }
             Spacer(Modifier.weight(1f))

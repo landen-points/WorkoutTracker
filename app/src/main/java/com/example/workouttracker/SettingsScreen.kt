@@ -94,13 +94,13 @@ fun SettingsScreen(
     Column(modifier.fillMaxSize().padding(16.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text("Units:", Modifier.width(106.dp), style = MaterialTheme.typography.titleMedium)
-            SettingsDropdown(preferences.units.symbol, WeightUnit.entries.map { it.symbol }, Modifier.weight(1f)) { symbol ->
+            BoxDropdown(preferences.units.symbol, WeightUnit.entries.map { it.symbol }, Modifier.weight(1f)) { symbol ->
                 update { AppSettings.setUnits(context, WeightUnit.entries.first { it.symbol == symbol }) }
             }
         }
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text("Date format:", Modifier.width(106.dp), style = MaterialTheme.typography.titleMedium)
-            SettingsDropdown(preferences.dates.label, DateOrder.entries.map { it.label }, Modifier.weight(1f)) { label ->
+            BoxDropdown(preferences.dates.label, DateOrder.entries.map { it.label }, Modifier.weight(1f)) { label ->
                 update { AppSettings.setDates(context, DateOrder.entries.first { it.label == label }) }
             }
         }
@@ -179,17 +179,4 @@ fun SettingsScreen(
     if (about) AlertDialog(onDismissRequest = { about = false }, title = { Text("About") },
         text = { Column { Text("Workout Tracker"); Text("Version ${BuildConfig.VERSION_NAME} (build ${BuildConfig.VERSION_CODE})") } },
         confirmButton = { TextButton(onClick = { about = false }) { Text("Close") } })
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun SettingsDropdown(value: String, options: List<String>, modifier: Modifier = Modifier, onSelect: (String) -> Unit) {
-    var expanded by remember { mutableStateOf(false) }
-    ExposedDropdownMenuBox(expanded, onExpandedChange = { expanded = it }, modifier = modifier) {
-        OutlinedTextField(value, {}, readOnly = true, singleLine = true, modifier = Modifier.fillMaxWidth().menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable),
-            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded) })
-        ExposedDropdownMenu(expanded, onDismissRequest = { expanded = false }) {
-            options.forEach { option -> DropdownMenuItem(text = { Text(option) }, onClick = { expanded = false; onSelect(option) }) }
-        }
-    }
 }
